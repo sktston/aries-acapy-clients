@@ -6,6 +6,7 @@
 package org.hyperledger.aries;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import lombok.Builder;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
@@ -13,23 +14,29 @@ import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import org.apache.commons.lang3.StringUtils;
+import org.hyperledger.aries.api.action_menu.PerformRequest;
+import org.hyperledger.aries.api.action_menu.SendMenu;
 import org.hyperledger.aries.api.connection.*;
-import org.hyperledger.aries.api.creddef.CredentialDefinition;
-import org.hyperledger.aries.api.creddef.CredentialDefinition.CredentialDefinitionRequest;
-import org.hyperledger.aries.api.creddef.CredentialDefinition.CredentialDefinitionResponse;
-import org.hyperledger.aries.api.creddef.CredentialDefinition.CredentialDefinitionsCreated;
-import org.hyperledger.aries.api.creddef.CredentialDefinitionFilter;
-import org.hyperledger.aries.api.credential.Credential;
-import org.hyperledger.aries.api.credential.CredentialExchange;
-import org.hyperledger.aries.api.credential.CredentialFilter;
-import org.hyperledger.aries.api.credential.CredentialProposalRequest;
+import org.hyperledger.aries.api.credential_definition.CredentialDefinition;
+import org.hyperledger.aries.api.credential_definition.CredentialDefinition.CredentialDefinitionRequest;
+import org.hyperledger.aries.api.credential_definition.CredentialDefinition.CredentialDefinitionResponse;
+import org.hyperledger.aries.api.credential_definition.CredentialDefinition.CredentialDefinitionsCreated;
+import org.hyperledger.aries.api.credential_definition.CredentialDefinitionFilter;
+import org.hyperledger.aries.api.credentials.Credential;
+import org.hyperledger.aries.api.credentials.CredentialFilter;
+import org.hyperledger.aries.api.did_exchange.*;
 import org.hyperledger.aries.api.exception.AriesException;
+import org.hyperledger.aries.api.issue_credential_v1.*;
 import org.hyperledger.aries.api.jsonld.*;
 import org.hyperledger.aries.api.ledger.*;
 import org.hyperledger.aries.api.message.BasicMessage;
 import org.hyperledger.aries.api.message.PingRequest;
 import org.hyperledger.aries.api.message.PingResponse;
-import org.hyperledger.aries.api.proof.*;
+import org.hyperledger.aries.api.multitenancy.*;
+import org.hyperledger.aries.api.out_of_band.CreateInvitationFilter;
+import org.hyperledger.aries.api.out_of_band.InvitationCreateRequest;
+import org.hyperledger.aries.api.out_of_band.InvitationRecord;
+import org.hyperledger.aries.api.present_proof.*;
 import org.hyperledger.aries.api.revocation.*;
 import org.hyperledger.aries.api.schema.SchemaSendRequest;
 import org.hyperledger.aries.api.schema.SchemaSendResponse;
@@ -45,10 +52,7 @@ import java.io.IOException;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -57,32 +61,92 @@ public class AriesClient extends BaseClient {
 
     private final String url;
     private final String apiKey;
+    private final String bearerToken;
 
     /**
-     * @param url The base URL without a path e.g. protocol://host:[port]
-     */
-    public AriesClient(@NonNull String url) {
-        this(url, null);
-    }
-
-    /**
-     * @param url The base URL without a path e.g. protocol://host:[port]
-     * @param apiKey The API key of the aries admin endpoint
-     */
-    public AriesClient(@NonNull String url, @Nullable String apiKey) {
-        this(url, apiKey, null);
-    }
-
-    /**
-     * @param url The base URL without a path e.g. protocol://host:[port]
-     * @param apiKey The API key of the aries admin endpoint
+     * @param url The aca-py admin api URL without a path e.g. protocol://host:[port]
+     * @param apiKey The admin api api key
+     * @param bearerToken the Bearer token used in the Authorization header when running in multi tenant mode
      * @param client {@link OkHttpClient} if null a default client is created
      */
     @Builder
-    public AriesClient(@NonNull String url, @Nullable String apiKey, @Nullable OkHttpClient client) {
+    public AriesClient(@NonNull String url, @Nullable String apiKey,
+                       @Nullable String bearerToken, @Nullable OkHttpClient client) {
         super(client);
-        this.url = url;
-        this.apiKey = apiKey != null ? apiKey : "";
+        this.url = StringUtils.trim(url);
+        this.apiKey = StringUtils.trimToEmpty(apiKey);
+        this.bearerToken = StringUtils.trimToEmpty(bearerToken);
+    }
+
+    // ----------------------------------------------------
+    // Action Menu - Menu interaction over connection
+    // ----------------------------------------------------
+
+    /**
+     * Close the active menu associated with a connection
+     * @param connectionId the connection id
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void actionMenuClose(@NonNull String connectionId) throws IOException {
+        Request req = buildPost(url + "/action-menu/" + connectionId + "/close", EMPTY_JSON);
+        call(req);
+    }
+
+    /**
+     * Fetch the active menu
+     * @param connectionId the connection id
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void actionMenuFetch(@NonNull String connectionId) throws IOException {
+        Request req = buildPost(url + "/action-menu/" + connectionId + "/fetch", EMPTY_JSON);
+        call(req);
+    }
+
+    /**
+     * Perform an action associated with the active menu
+     * @param connectionId the connection id
+     * @param request {@link PerformRequest}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void actionMenuPerform(@NonNull String connectionId, @NonNull PerformRequest request) throws IOException {
+        Request req = buildPost(url + "/action-menu/" + connectionId + "/perform", request);
+        call(req);
+    }
+
+    /**
+     * Request the active menu
+     * @param connectionId the connection id
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void actionMenuRequest(@NonNull String connectionId) throws IOException {
+        Request req = buildPost(url + "/action-menu/" + connectionId + "/request", EMPTY_JSON);
+        call(req);
+    }
+
+    /**
+     * Send an action menu to a connection
+     * @param connectionId the connection id
+     * @param request {@link SendMenu}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void actionMenuSendMenu(@NonNull String connectionId, @NonNull SendMenu request) throws IOException {
+        Request req = buildPost(url + "/action-menu/" + connectionId + "/send-menu", request);
+        call(req);
+    }
+
+    // ----------------------------------------------------
+    // Basic Message - Simple Messaging
+    // ----------------------------------------------------
+
+    /**
+     * Send a basic message to a connection
+     * @param connectionId the connection id
+     * @param msg the message
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void connectionsSendMessage(@NonNull String connectionId, @NonNull BasicMessage msg) throws IOException {
+        Request req = buildPost(url + "/connections/" + connectionId + "/send-message", msg);
+        call(req);
     }
 
     // ----------------------------------------------------
@@ -139,16 +203,6 @@ public class AriesClient extends BaseClient {
     }
 
     /**
-     * Remove an existing connection record
-     * @param connectionId the connection id
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public void connectionsRemove(@NonNull String connectionId) throws IOException {
-        Request req = buildDelete(url + "/connections/" + connectionId);
-        call(req);
-      }
-
-    /**
      * Create a new connection invitation
      * @return {@link CreateInvitationResponse}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
@@ -191,6 +245,18 @@ public class AriesClient extends BaseClient {
     }
 
     /**
+     * Create a new static connection
+     * @param request {@link ConnectionStaticRequest}
+     * @return {@link ConnectionStaticResult}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<ConnectionStaticResult> connectionsCreateStatic(@NonNull ConnectionStaticRequest request)
+            throws IOException {
+        Request req = buildPost(url + "/connections/create-static", request);
+        return call(req, ConnectionStaticResult.class);
+    }
+
+    /**
      * Receive a new connection invitation
      * @param invite {@link ReceiveInvitationRequest}
      * @param alias optional: alias for the connection
@@ -208,36 +274,125 @@ public class AriesClient extends BaseClient {
         return call(req, ConnectionRecord.class);
     }
 
-    // ----------------------------------------------------
-    // Basic Message - Simple Messaging
-    // ----------------------------------------------------
-
     /**
-     * Send a basic message to a connection
+     * Fetch a single connection record
      * @param connectionId the connection id
-     * @param msg the message
+     * @return {@link ConnectionRecord}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public void connectionsSendMessage(@NonNull String connectionId, @NonNull BasicMessage msg) throws IOException {
-        Request req = buildPost(url + "/connections/" + connectionId + "/send-message", msg);
+    public Optional<ConnectionRecord> connectionsGetById(@NonNull String connectionId) throws IOException {
+        Request req = buildGet(url + "/connections/" + connectionId);
+        return call(req, ConnectionRecord.class);
+    }
+
+    /**
+     * Remove an existing connection record
+     * @param connectionId the connection id
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void connectionsRemove(@NonNull String connectionId) throws IOException {
+        Request req = buildDelete(url + "/connections/" + connectionId);
         call(req);
     }
 
-    // ----------------------------------------------------
-    // Trust Ping - Trust-ping Over Connection
-    // ----------------------------------------------------
-
     /**
-     * Send a trust ping to a connection
+     * Accept a stored connection invitation
      * @param connectionId the connection id
-     * @param comment comment for the ping message
-     * @return {@link PingResponse}
+     * @param filter optional {@link ConnectionAcceptInvitationFilter}
+     * @return {@link ConnectionRecord}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<PingResponse> connectionsSendPing(@NonNull String connectionId, @NonNull PingRequest comment)
+    public Optional<ConnectionRecord> connectionsAcceptInvitation(@NonNull String connectionId,
+        @Nullable ConnectionAcceptInvitationFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+            HttpUrl.parse(url + "/connections/" + connectionId + "/accept-invitation")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.toString(), EMPTY_JSON);
+        return call(req, ConnectionRecord.class);
+    }
+
+    /**
+     * Accept a stored connection request
+     * @param connectionId the connection id
+     * @param filter optional {@link ConnectionAcceptRequestFilter}
+     * @return {@link ConnectionRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<ConnectionRecord> connectionsAcceptRequest(@NonNull String connectionId,
+        @Nullable ConnectionAcceptRequestFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/connections/" + connectionId + "/accept-request")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.toString(), EMPTY_JSON);
+        return call(req, ConnectionRecord.class);
+    }
+
+    /**
+     * Fetch a connection remote endpoint
+     * @param connectionId the connection id
+     * @return {@link EndpointResult}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<EndpointResult> connectionsGetEndpoints(@NonNull String connectionId) throws IOException {
+        Request req = buildGet(url + "/connections/" + connectionId + "/endpoints");
+        return call(req, EndpointResult.class);
+    }
+
+    /**
+     * Assign another connection as the inbound connection
+     * @param connectionId the connection identifier
+     * @param inboundConnectionId inbound connection identifier
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void connectionsEstablishInbound(
+            @NonNull String connectionId, @NonNull String inboundConnectionId) throws IOException {
+        Request req = buildPost(
+                url + "/connections/" + connectionId + "/establish-inbound/" + inboundConnectionId, EMPTY_JSON);
+        call(req);
+    }
+
+    /**
+     * Fetch connection metadata
+     * @param connectionId the connection id
+     * @return {@link Map} metadata map
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Map<String, String>> connectionsGetMetadata(@NonNull String connectionId) throws IOException {
+        Request req = buildGet(url + "/connections/" + connectionId + "/metadata");
+        return call(req, MAP_TYPE);
+    }
+
+    /**
+     * Fetch connection metadata
+     * @param connectionId the connection id
+     * @param key Key to retrieve
+     * @return single value string
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<String> connectionsGetMetadata(@NonNull String connectionId, @NonNull String key)
             throws IOException {
-        Request req = buildPost(url + "/connections/" + connectionId + "/send-ping", comment);
-        return call(req, PingResponse.class);
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/connections/" + connectionId + "/metadata")).newBuilder();
+        b.addQueryParameter("key", key);
+        Request req = buildGet(b.toString());
+        return call(req, String.class);
+    }
+
+    /**
+     * Set connection metadata
+     * @param connectionId the connection id
+     * @param request {@link ConnectionSetMetaDataRequest}
+     * @return {@link Map} metadata map
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Map<String, String>> connectionsSetMetadata(@NonNull String connectionId,
+        @NonNull ConnectionSetMetaDataRequest request) throws IOException {
+        Request req = buildPost(url + "/connections/" + connectionId + "/metadata", request);
+        return call(req, MAP_TYPE);
     }
 
     // ----------------------------------------------------
@@ -285,64 +440,54 @@ public class AriesClient extends BaseClient {
     }
 
     // ----------------------------------------------------
-    // Issue Credential - Credential Issue v1.0
-    // ----------------------------------------------------
-
-    /**
-     * Send holder a credential, automating the entire flow
-     * @param proposalRequest {@link CredentialProposalRequest} the credential to be issued
-     * @return {@link CredentialExchange}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<CredentialExchange> issueCredentialSend(@NonNull CredentialProposalRequest proposalRequest)
-            throws IOException {
-        Request req = buildPost(url + "/issue-credential/send", proposalRequest);
-        return call(req, CredentialExchange.class);
-    }
-
-    /**
-     * Send issuer a credential proposal
-     * @param proposalRequest {@link CredentialProposalRequest} the requested credential
-     * @return {@link CredentialExchange}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<CredentialExchange> issueCredentialSendProposal(@NonNull CredentialProposalRequest proposalRequest)
-            throws IOException {
-        Request req = buildPost(url + "/issue-credential/send-proposal", proposalRequest);
-        return call(req, CredentialExchange.class);
-    }
-
-    /**
-     * Store a received credential
-     * @param credentialExchangeId the credential exchange id
-     * @return {@link CredentialExchange}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<CredentialExchange> issueCredentialRecordsStore(@NonNull String credentialExchangeId)
-            throws IOException {
-        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/store", "");
-        return call(req, CredentialExchange.class);
-    }
-
-    /**
-     * Remove an existing credential exchange record
-     * @param credentialExchangeId the credential exchange id
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public void issueCredentialRecordsRemove(@NonNull String credentialExchangeId) throws IOException {
-        Request req = buildDelete(url + "/issue-credential/records/" + credentialExchangeId);
-        call(req);
-      }
-
-    // ----------------------------------------------------
-    // Issue Credential - Credential Issue v1.0
-    // ----------------------------------------------------
-
-    // TODO
-
-    // ----------------------------------------------------
     // Credentials- Holder Credential Management
     // ----------------------------------------------------
+
+    // TODO no model, create a couple of credentials with mime types and see what happens
+    /**
+     * Get attribute MIME types from wallet
+     * @param credentialId credential id
+     * @return ???
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Object> credentialMimeTypes(@NonNull String credentialId)
+            throws IOException {
+        Request req = buildGet(url + "/credential/mime-types/" + credentialId);
+        return call(req, Object.class);
+    }
+
+    /**
+     * Query credential revocation status by id
+     * @param credentialId credentialId
+     * @return {@link Credential.CredentialRevokedResult}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Credential.CredentialRevokedResult> credentialRevoked(@NonNull String credentialId)
+            throws IOException {
+        Request req = buildGet(url + "/credential/revoked/" + credentialId);
+        return call(req, Credential.CredentialRevokedResult.class);
+    }
+
+    /**
+     * Fetch a credential from wallet by id
+     * @param credentialId credentialId
+     * @return {@link Credential}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Credential> credential(@NonNull String credentialId) throws IOException {
+        Request req = buildGet(url + "/credential/" + credentialId);
+        return call(req, Credential.class);
+    }
+
+    /**
+     * Remove a credential from the wallet by id (credentialId)
+     * @param credentialId credentialId
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void credentialRemove(@NonNull String credentialId) throws IOException {
+        Request req = buildDelete(url + "/credential/" + credentialId);
+        call(req);
+    }
 
     /**
      * Fetch credentials from wallet
@@ -396,220 +541,247 @@ public class AriesClient extends BaseClient {
         return result;
     }
 
-    /**
-     * Fetch a credential from wallet by id
-     * @param credentialId credentialId
-     * @return {@link Credential}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<Credential> credential(@NonNull String credentialId) throws IOException {
-        Request req = buildGet(url + "/credential/" + credentialId);
-        return call(req, Credential.class);
-    }
-
-    /**
-     * Remove a credential from the wallet by id (credentialId)
-     * @param credentialId credentialId
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public void credentialRemove(@NonNull String credentialId) throws IOException {
-        Request req = buildDelete(url + "/credential/" + credentialId);
-        call(req);
-    }
-
-    /**
-     * Query credential revocation status by id
-     * @param credentialId credentialId
-     * @return {@link Credential.CredentialRevokedResult}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<Credential.CredentialRevokedResult> credentialRevoked(@NonNull String credentialId)
-            throws IOException {
-        Request req = buildGet(url + "/credential/revoked/" + credentialId);
-        return call(req, Credential.CredentialRevokedResult.class);
-    }
-
     // ----------------------------------------------------
-    // Present Proof - Proof Presentation
+    // DID Exchange - Connection management via DID exchange
     // ----------------------------------------------------
 
     /**
-     * Fetch all present-proof exchange records
-     * @return list of {@link PresentationExchangeRecord}
+     * Create request against public DID's implicit invitation
+     * @param filter {@link DidExchangeCreateRequestFilter}
+     * @return {@link DIDXRequest}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<List<PresentationExchangeRecord>> presentProofRecords() throws IOException {
-        return presentProofRecords(null);
+    public Optional<DIDXRequest> didExchangeCreateRequest(@NonNull DidExchangeCreateRequestFilter filter)
+            throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/didexchange/create-request")).newBuilder();
+        filter.buildParams(b);
+        Request req = buildPost(b.toString(), EMPTY_JSON);
+        return call(req, DIDXRequest.class);
     }
 
     /**
-     * Fetch all present-proof exchange records
-     * @param filter {@link PresentProofRecordsFilter}
-     * @return list of {@link PresentationExchangeRecord}
+     * Receive request against public DID's implicit invitation
+     * @param request {@link DIDXRequest}
+     * @param filter {@link DidExchangeReceiveRequestFilter}
+     * @return {link ConnectionRecord}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<List<PresentationExchangeRecord>> presentProofRecords(@Nullable PresentProofRecordsFilter filter)
+    public Optional<ConnectionRecord> didExchangeReceiveRequest(@NonNull DIDXRequest request,
+        @Nullable DidExchangeReceiveRequestFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/didexchange/receive-request")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.toString(), request);
+        return call(req, ConnectionRecord.class);
+    }
+
+    /**
+     * Accept a stored connection invitation
+     * @param connectionId the connection id
+     * @param filter {@link DidExchangeAcceptInvitationFilter}
+     * @return {@link ConnectionRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<ConnectionRecord> didExchangeAcceptInvitation(@NonNull String connectionId,
+        @Nullable DidExchangeAcceptInvitationFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/didexchange/" + connectionId + "/accept-invitation")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.toString(), EMPTY_JSON);
+        return call(req, ConnectionRecord.class);
+    }
+
+    /**
+     * Accept a stored connection request
+     * @param connectionId the connection id
+     * @param filter {@link DidExchangeAcceptRequestFilter}
+     * @return {@link ConnectionRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<ConnectionRecord> didExchangeAcceptRequest(@NonNull String connectionId,
+        @Nullable DidExchangeAcceptRequestFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(
+                HttpUrl.parse(url + "/didexchange/" + connectionId + "/accept-request")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.toString(), EMPTY_JSON);
+        return call(req, ConnectionRecord.class);
+    }
+
+    // ----------------------------------------------------
+    // Introduction - introduction of known parties
+    // ----------------------------------------------------
+
+    // TODO
+
+    // ----------------------------------------------------
+    // Issue Credential - Credential Issue v1.0
+    // ----------------------------------------------------
+
+    /**
+     * Send holder a credential, automating the entire flow
+     * @param request {@link V1CredentialCreate}
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialCreate(@NonNull V1CredentialCreate request)
             throws IOException {
-        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/present-proof/records")).newBuilder();
+        Request req = buildPost(url + "/issue-credential/create", request);
+        return call(req, V1CredentialExchange.class);
+    }
+
+    /**
+     * Fetch all credential exchange records
+     * @param filter {@link IssueCredentialRecordsFilter}
+     * @return list of {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<V1CredentialExchange>> issueCredentialRecords(IssueCredentialRecordsFilter filter)
+            throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/issue-credential/records")).newBuilder();
         if (filter != null) {
             filter.buildParams(b);
         }
         Request req = buildGet(b.build().toString());
         final Optional<String> resp = raw(req);
-        return getWrapped(resp, "results", PROOF_TYPE);
+        return getWrapped(resp, "results", ISSUE_CREDENTIAL_TYPE);
     }
 
     /**
-     * Fetch a single presentation exchange record by ID
-     * @param presentationExchangeId the presentation exchange id
-     * @return {@link PresentationExchangeRecord}
+     * Fetch a single credential exchange record
+     * @param credentialExchangeId credential exchange identifier
+     * @return {@link V1CredentialExchange}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<PresentationExchangeRecord> presentProofRecord(@NonNull String presentationExchangeId)
+    public Optional<V1CredentialExchange> issueCredentialRecordsGetById(@NonNull String credentialExchangeId)
             throws IOException {
-        Request req = buildGet(url + "/present-proof/records/" + presentationExchangeId);
-        return call(req, PresentationExchangeRecord.class);
+        Request req = buildGet(url + "/issue-credential/records/" + credentialExchangeId);
+        return call(req, V1CredentialExchange.class);
     }
 
     /**
-     * Sends a presentation proposal
-     * @param proofProposal {@link PresentProofProposal}
-     * @return {@link PresentationExchangeRecord}
+     * Remove an existing credential exchange record
+     * @param credentialExchangeId the credential exchange id
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<PresentationExchangeRecord> presentProofSendProposal(@NonNull PresentProofProposal proofProposal)
-            throws IOException{
-        Request req = buildPost(url + "/present-proof/send-proposal", proofProposal);
-        return call(req, PresentationExchangeRecord.class);
-    }
-
-    /**
-     * Creates a presentation request not bound to any proposal or existing connection
-     * @param proofRequest {@link PresentProofRequest}
-     * @return {@link PresentationExchangeRecord}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<PresentationExchangeRecord> presentProofCreateRequest(@NonNull PresentProofRequest proofRequest)
-            throws IOException {
-        Request req = buildPost(url + "/present-proof/create-request", proofRequest);
-        return call(req, PresentationExchangeRecord.class);
-    }
-
-    /**
-     * Sends a free presentation request not bound to any proposal
-     * @param proofRequest {@link PresentProofRequest}
-     * @return {@link PresentationExchangeRecord}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<PresentationExchangeRecord> presentProofSendRequest(@NonNull PresentProofRequest proofRequest)
-            throws IOException {
-        Request req = buildPost(url + "/present-proof/send-request", proofRequest);
-        return call(req, PresentationExchangeRecord.class);
-    }
-
-    /**
-     * Sends a proof presentation
-     * @param presentationExchangeId the presentation exchange id
-     * @param presentationRequest {@link PresentationRequest}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public void presentProofRecordsSendPresentation(@NonNull String presentationExchangeId,
-            @NonNull PresentationRequest presentationRequest) throws IOException {
-        Request req = buildPost(url + "/present-proof/records/" + presentationExchangeId + "/send-presentation",
-                presentationRequest);
+    public void issueCredentialRecordsRemove(@NonNull String credentialExchangeId) throws IOException {
+        Request req = buildDelete(url + "/issue-credential/records/" + credentialExchangeId);
         call(req);
     }
 
     /**
-     * Remove an existing presentation exchange record by ID
-     * @param presentationExchangeId the presentation exchange id
+     * Send holder a credential
+     * @param credentialExchangeId credential exchange identifier
+     * @param request optional {@link V1CredentialIssueRequest}
+     * @return {@link V1CredentialExchange}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public void presentProofRecordsRemove(@NonNull String presentationExchangeId) throws IOException {
-        Request req = buildDelete(url + "/present-proof/records/" + presentationExchangeId);
-        call(req);
-    }
-
-    // ----------------------------------------------------
-    // Schemas
-    // ----------------------------------------------------
-
-    /**
-     * Sends a schema to the ledger
-     * @param schema {@link SchemaSendRequest}
-     * @return {@link SchemaSendResponse}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<SchemaSendResponse> schemas(@NonNull SchemaSendRequest schema) throws IOException {
-        Request req = buildPost(url + "/schemas", schema);
-        return call(req, SchemaSendResponse.class);
+    public Optional<V1CredentialExchange> issueCredentialRecordsIssue(
+            @NonNull String credentialExchangeId, @Nullable V1CredentialIssueRequest request) throws IOException {
+        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/issue",
+                request != null ? request : EMPTY_JSON);
+        return call(req, V1CredentialExchange.class);
     }
 
     /**
-     * Gets a schema from the ledger
-     * @param schemaId the schemas id or sequence number
-     * @return {@link Schema}
+     * Send a problem report for a credential exchange
+     * @param credentialExchangeId credential exchange identifier
+     * @param request {@link V1CredentialProblemReportRequest}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<Schema> schemasGetById(@NonNull String schemaId) throws IOException {
-        Request req = buildGet(url + "/schemas/" + schemaId);
-        return getWrapped(raw(req), "schema", Schema.class);
-    }
-
-    // ----------------------------------------------------
-    // Wallet
-    // ----------------------------------------------------
-
-    /**
-     * List wallet DIDs
-     * @return list of {@link WalletDidResponse}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<List<WalletDidResponse>> walletDid() throws IOException {
-        Request req = buildGet(url + "/wallet/did");
-        return getWrapped(raw(req), "results", WALLET_DID_TYPE);
-    }
-
-    /**
-     * Create local DID
-     * @return {@link WalletDidResponse}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<WalletDidResponse> walletDidCreate() throws IOException {
-        Request req = buildPost(url + "/wallet/did/create", EMPTY_JSON);
-        return getWrapped(raw(req), "result", WalletDidResponse.class);
-    }
-
-    /**
-     * Fetch the current public DID
-     * @return {@link WalletDidResponse}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<WalletDidResponse> walletDidPublic() throws IOException {
-        Request req = buildGet(url + "/wallet/did/public");
-        return getWrapped(raw(req), "result", WalletDidResponse.class);
-    }
-
-    /**
-     * Update end point in wallet and, if public, on ledger
-     * @param endpointRequest {@link SetDidEndpointRequest}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public void walletSetDidEndpoint(@NonNull SetDidEndpointRequest endpointRequest) throws IOException {
-        Request req = buildPost(url + "/wallet/set-did-endpoint", endpointRequest);
+    public void issueCredentialRecordsProblemReport(@NonNull String credentialExchangeId,
+            @NonNull V1CredentialProblemReportRequest request) throws IOException {
+        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/problem-report",
+                request);
         call(req);
     }
 
     /**
-     * Query DID end point in wallet
-     * @param did the did
-     * @return {@link GetDidEndpointResponse}
+     * Send holder a credential offer in reference to a proposal with a preview
+     * @param credentialExchangeId credential exchange identifier
+     * @return {@link V1CredentialExchange}
      * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
      */
-    public Optional<GetDidEndpointResponse> walletGetDidEndpoint(@NonNull String did) throws IOException {
-        Request req = buildGet(url + "/wallet/get-did-endpoint" + "?did=" + did);
-        return call(req, GetDidEndpointResponse.class);
+    public Optional<V1CredentialExchange> issueCredentialRecordsSendOffer(
+            @NonNull String credentialExchangeId) throws IOException {
+        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/send-offer",
+                EMPTY_JSON);
+        return call(req, V1CredentialExchange.class);
     }
+
+    /**
+     * Send issuer a credential request
+     * @param credentialExchangeId credential exchange identifier
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialRecordsSendRequest(
+            @NonNull String credentialExchangeId) throws IOException {
+        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/send-request",
+                EMPTY_JSON);
+        return call(req, V1CredentialExchange.class);
+    }
+
+    /**
+     * Store a received credential
+     * @param credentialExchangeId the credential exchange id
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialRecordsStore(@NonNull String credentialExchangeId,
+            @Nullable V1CredentialStoreRequest request) throws IOException {
+        Request req = buildPost(url + "/issue-credential/records/" + credentialExchangeId + "/store",
+                request != null ? request : "");
+        return call(req, V1CredentialExchange.class);
+    }
+
+    /**
+     * Send holder a credential, automating the entire flow
+     * @param request {@link V1CredentialProposalRequest} the credential to be issued
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialSend(@NonNull V1CredentialProposalRequest request)
+            throws IOException {
+        Request req = buildPost(url + "/issue-credential/send", request);
+        return call(req, V1CredentialExchange.class);
+    }
+
+    /**
+     * Send holder a credential offer, independent of any proposal
+     * @param request {@link V1CredentialOfferRequest}
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialSendOffer(@NonNull V1CredentialOfferRequest request)
+            throws IOException {
+        Request req = buildPost(url + "/issue-credential/send-offer", request);
+        return call(req, V1CredentialExchange.class);
+    }
+
+    /**
+     * Send issuer a credential proposal
+     * @param request {@link V1CredentialProposalRequest} the requested credential
+     * @return {@link V1CredentialExchange}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<V1CredentialExchange> issueCredentialSendProposal(@NonNull V1CredentialProposalRequest request)
+            throws IOException {
+        Request req = buildPost(url + "/issue-credential/send-proposal", request);
+        return call(req, V1CredentialExchange.class);
+    }
+
+    // ----------------------------------------------------
+    // Issue Credential - Credential Issue v2.0
+    // ----------------------------------------------------
+
+    // TODO
 
     // ----------------------------------------------------
     // JSON-LD
@@ -653,19 +825,6 @@ public class AriesClient extends BaseClient {
     // ----------------------------------------------------
 
     /**
-     * Get the verkey for a did from the ledger
-     * @param did the DID of interest
-     * @return {@link EndpointResponse}
-     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
-     */
-    public Optional<DidVerkeyResponse> ledgerDidVerkey(@NonNull String did)  throws IOException{
-        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/ledger/did-verkey")).newBuilder();
-        b.addQueryParameter("did", did);
-        Request req = buildGet(b.build().toString());
-        return call(req, DidVerkeyResponse.class);
-    }
-
-    /**
      * Get the endpoint for a DID from the ledger.
      * @param did the DID of interest
      * @param type optional, endpoint type of interest (defaults to 'endpoint')
@@ -677,10 +836,23 @@ public class AriesClient extends BaseClient {
         HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/ledger/did-endpoint")).newBuilder();
         b.addQueryParameter("did", did);
         if (type != null) {
-            b.addQueryParameter("endpoint_type", type.toString());
+            b.addQueryParameter("endpoint_type", type.getAcaPyName());
         }
         Request req = buildGet(b.build().toString());
         return call(req, EndpointResponse.class);
+    }
+
+    /**
+     * Get the verkey for a did from the ledger
+     * @param did the DID of interest
+     * @return {@link EndpointResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<DidVerkeyResponse> ledgerDidVerkey(@NonNull String did)  throws IOException{
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/ledger/did-verkey")).newBuilder();
+        b.addQueryParameter("did", did);
+        Request req = buildGet(b.build().toString());
+        return call(req, DidVerkeyResponse.class);
     }
 
     /**
@@ -705,6 +877,301 @@ public class AriesClient extends BaseClient {
     }
 
     // ----------------------------------------------------
+    // Mediation - Mediation management
+    // ----------------------------------------------------
+
+    // TODO
+
+    // ----------------------------------------------------
+    // Multitenancy - Multitenant wallet management
+    // ----------------------------------------------------
+
+    /**
+     * Create sub wallet
+     * @param request {@link CreateWalletRequest}
+     * @return {@link WalletRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<WalletRecord> multitenancyWalletCreate(@NonNull CreateWalletRequest request) throws IOException {
+        Request req = buildPost(url + "/multitenancy/wallet", request);
+        return call(req, WalletRecord.class);
+    }
+
+    /**
+     * Get a singe sub wallet
+     * @param walletId sub wallet identifier
+     * @return {@link WalletRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<WalletRecord> multitenancyWalletGet(@NonNull String walletId)
+            throws IOException {
+        Request req = buildGet(url + "/multitenancy/wallet/" + walletId);
+        return call(req, WalletRecord.class);
+    }
+
+    /**
+     * Update a sub wallet
+     * @param walletId sub wallet identifier
+     * @param request {@link UpdateWalletRequest}
+     * @return {@link WalletRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<WalletRecord> multitenancyWalletUpdate(@NonNull String walletId,
+           @NonNull UpdateWalletRequest request) throws IOException {
+        Request req = buildPut(url + "/multitenancy/wallet/" + walletId, request);
+        return call(req, WalletRecord.class);
+    }
+
+    /**
+     * remove a sub wallet
+     * @param walletId sub wallet identifier
+     * @param request {@link RemoveWalletRequest}
+     * @return no body on success
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Void> multitenancyWalletRemove(@NonNull String walletId,
+        @NonNull RemoveWalletRequest request) throws IOException {
+        Request req = buildPost(url + "/multitenancy/wallet/" + walletId + "/remove", request);
+        return call(req, Void.class);
+    }
+
+    /**
+     * Get auth token for a sub wallet
+     * @param walletId sub wallet identifier
+     * @param request {@link CreateWalletTokenRequest}
+     * @return {@link CreateWalletTokenResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<CreateWalletTokenResponse> multitenancyWalletToken(@NonNull String walletId,
+        @NonNull CreateWalletTokenRequest request) throws IOException {
+        Request req = buildPost(url + "/multitenancy/wallet/" + walletId + "/token", request);
+        return call(req, CreateWalletTokenResponse.class);
+    }
+
+    /**
+     * Query sub wallets
+     * @param walletName optional the wallets name
+     * @return list of {@link WalletRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<WalletRecord>> multitenancyWallets(String walletName)
+            throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/multitenancy/wallets")).newBuilder();
+        if (StringUtils.isNotEmpty(walletName)) {
+            b.addQueryParameter("wallet_name", walletName);
+        }
+        Request req = buildGet(b.build().toString());
+        final Optional<String> resp = raw(req);
+        return getWrapped(resp, "results", WALLET_RECORD_TYPE);
+    }
+
+    // ----------------------------------------------------
+    // Out Of Band - Out-of-band connection
+    // ----------------------------------------------------
+
+    /**
+     * Create a new connection invitation
+     * @param request {@link InvitationCreateRequest}
+     * @param filter optional {@link CreateInvitationFilter}
+     * @return {@link InvitationRecord}
+     * @throws IOException
+     */
+    public Optional<InvitationRecord> outOfBandCreateInvitation(
+            @NonNull InvitationCreateRequest request, CreateInvitationFilter filter) throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/out-of-band/vreate-invitation")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildPost(b.build().toString(), request);
+        return call(req, InvitationRecord.class);
+    }
+
+    // ----------------------------------------------------
+    // Present Proof - Proof Presentation
+    // ----------------------------------------------------
+
+    /**
+     * Creates a presentation request not bound to any proposal or existing connection
+     * @param proofRequest {@link PresentProofRequest}
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofCreateRequest(@NonNull PresentProofRequest proofRequest)
+            throws IOException {
+        Request req = buildPost(url + "/present-proof/create-request", proofRequest);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Fetch all present-proof exchange records
+     * @return list of {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<PresentationExchangeRecord>> presentProofRecords() throws IOException {
+        return presentProofRecords(null);
+    }
+
+    /**
+     * Fetch all present-proof exchange records
+     * @param filter {@link PresentProofRecordsFilter}
+     * @return list of {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<PresentationExchangeRecord>> presentProofRecords(@Nullable PresentProofRecordsFilter filter)
+            throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl.parse(url + "/present-proof/records")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildGet(b.build().toString());
+        final Optional<String> resp = raw(req);
+        return getWrapped(resp, "results", PROOF_TYPE);
+    }
+
+    /**
+     * Fetch a single presentation exchange record by ID
+     * @param presentationExchangeId the presentation exchange id
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofRecordsGetById(@NonNull String presentationExchangeId)
+            throws IOException {
+        Request req = buildGet(url + "/present-proof/records/" + presentationExchangeId);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Remove an existing presentation exchange record by ID
+     * @param presentationExchangeId the presentation exchange id
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void presentProofRecordsRemove(@NonNull String presentationExchangeId) throws IOException {
+        Request req = buildDelete(url + "/present-proof/records/" + presentationExchangeId);
+        call(req);
+    }
+
+    /**
+     * Fetch credentials for a presentation request from wallet
+     * @param presentationExchangeId the presentation exchange id
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<PresentationRequestCredentials>> presentProofRecordsCredentials(
+            @NonNull String presentationExchangeId) throws IOException {
+        return presentProofRecordsCredentials(presentationExchangeId, null);
+    }
+
+    /**
+     * Fetch credentials for a presentation request from wallet
+     * @param presentationExchangeId the presentation exchange id
+     * @param filter {@link PresentationRequestCredentialsFilter}
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<PresentationRequestCredentials>> presentProofRecordsCredentials(
+            @NonNull String presentationExchangeId, @Nullable PresentationRequestCredentialsFilter filter)
+            throws IOException {
+        HttpUrl.Builder b = Objects.requireNonNull(HttpUrl
+                .parse(url + "/present-proof/records/" + presentationExchangeId + "/credentials")).newBuilder();
+        if (filter != null) {
+            filter.buildParams(b);
+        }
+        Request req = buildGet(b.build().toString());
+        return call(req, PRESENTATION_REQUEST_CREDENTIALS);
+    }
+
+    /**
+     * Send a problem report for presentation exchange
+     * @param presentationExchangeId presentation exchange identifier
+     * @param request {@link PresentationProblemReportRequest}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void presentProofRecordsProblemReport(@NonNull String presentationExchangeId,
+        @NonNull PresentationProblemReportRequest request) throws IOException {
+        Request req = buildPost(url + "/present-proof/records/" + presentationExchangeId + "/problem-report",
+                request);
+        call(req);
+    }
+
+    /**
+     * Sends a proof presentation
+     * @param presentationExchangeId the presentation exchange id
+     * @param presentationRequest {@link PresentationRequest}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void presentProofRecordsSendPresentation(@NonNull String presentationExchangeId,
+        @NonNull PresentationRequest presentationRequest) throws IOException {
+        Request req = buildPost(url + "/present-proof/records/" + presentationExchangeId + "/send-presentation",
+                presentationRequest);
+        call(req);
+    }
+
+    /**
+     * Sends presentation request in reference to a proposal
+     * @param presentationExchangeId presentation exchange identifier
+     * @param request {@link AdminAPIMessageTracing}
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofRecordsSendRequest(
+            @NonNull String presentationExchangeId, @NonNull AdminAPIMessageTracing request) throws IOException{
+        Request req = buildPost(url + "/present-proof/records/" + presentationExchangeId + "/send-request",
+                request);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Verify a received presentation
+     * @param presentationExchangeId presentation exchange identifier
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofRecordsVerifyPresentation(
+            @NonNull String presentationExchangeId) throws IOException{
+        Request req = buildPost(url + "/present-proof/records/" + presentationExchangeId + "/verify-presentation",
+                EMPTY_JSON);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Sends a presentation proposal
+     * @param proofProposal {@link PresentProofProposal}
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofSendProposal(@NonNull PresentProofProposal proofProposal)
+            throws IOException{
+        Request req = buildPost(url + "/present-proof/send-proposal", proofProposal);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Sends a free presentation request not bound to any proposal
+     * @param proofRequest {@link PresentProofRequest}
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofSendRequest(@NonNull PresentProofRequest proofRequest)
+            throws IOException {
+        Request req = buildPost(url + "/present-proof/send-request", proofRequest);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    /**
+     * Sends a free presentation request not bound to any proposal. Use this method if you want to have full
+     * control over the proof request.
+     * @param proofRequestJson json string
+     * @return {@link PresentationExchangeRecord}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PresentationExchangeRecord> presentProofSendRequest(@NonNull String proofRequestJson)
+            throws IOException {
+        JsonObject proofRequest = gson.fromJson(proofRequestJson, JsonObject.class);
+        Request req = buildPost(url + "/present-proof/send-request", proofRequest);
+        return call(req, PresentationExchangeRecord.class);
+    }
+
+    // ----------------------------------------------------
     // Revocation
     // ----------------------------------------------------
 
@@ -723,7 +1190,7 @@ public class AriesClient extends BaseClient {
     /**
      * Creates a new revocation registry
      * Creating a new registry is a three step flow:
-     * First: create the registry {@link #revocationCreateRegistry}
+     * First: create the registry
      * Second: publish the URI of the tails file {@link #revocationRegistryUpdateUri}
      * Third: Set the registry to active {@link #revocationActiveRegistry}
      * @param revRegRequest {@link RevRegCreateRequest}
@@ -796,6 +1263,32 @@ public class AriesClient extends BaseClient {
     }
 
     // ----------------------------------------------------
+    // Schema - Schema operations
+    // ----------------------------------------------------
+
+    /**
+     * Sends a schema to the ledger
+     * @param schema {@link SchemaSendRequest}
+     * @return {@link SchemaSendResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<SchemaSendResponse> schemas(@NonNull SchemaSendRequest schema) throws IOException {
+        Request req = buildPost(url + "/schemas", schema);
+        return call(req, SchemaSendResponse.class);
+    }
+
+    /**
+     * Gets a schema from the ledger
+     * @param schemaId the schemas id or sequence number
+     * @return {@link Schema}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<Schema> schemasGetById(@NonNull String schemaId) throws IOException {
+        Request req = buildGet(url + "/schemas/" + schemaId);
+        return getWrapped(raw(req), "schema", Schema.class);
+    }
+
+    // ----------------------------------------------------
     // Server
     // ----------------------------------------------------
 
@@ -836,7 +1329,7 @@ public class AriesClient extends BaseClient {
                     return;
                 }
             } catch (IOException e) {
-                log.error("aca-py not ready yet, reason: {}", e.getMessage());
+                log.trace("aca-py not ready yet, reason: {}", e.getMessage());
             }
             try {
                 Thread.sleep(100);
@@ -844,7 +1337,81 @@ public class AriesClient extends BaseClient {
                 log.error("Interrupted while waiting for aca-py", e);
             }
         }
-        throw new AriesException(0, "Timeout reached while waiting for aca-py to be ready");
+        String msg = "Timeout exceeded, aca-py not ready after: " + timeout;
+        log.error(msg);
+        throw new AriesException(0, msg);
+    }
+
+    // ----------------------------------------------------
+    // Trust Ping - Trust-ping Over Connection
+    // ----------------------------------------------------
+
+    /**
+     * Send a trust ping to a connection
+     * @param connectionId the connection id
+     * @param comment comment for the ping message
+     * @return {@link PingResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<PingResponse> connectionsSendPing(@NonNull String connectionId, @NonNull PingRequest comment)
+            throws IOException {
+        Request req = buildPost(url + "/connections/" + connectionId + "/send-ping", comment);
+        return call(req, PingResponse.class);
+    }
+
+    // ----------------------------------------------------
+    // Wallet
+    // ----------------------------------------------------
+
+    /**
+     * List wallet DIDs
+     * @return list of {@link WalletDidResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<List<WalletDidResponse>> walletDid() throws IOException {
+        Request req = buildGet(url + "/wallet/did");
+        return getWrapped(raw(req), "results", WALLET_DID_TYPE);
+    }
+
+    /**
+     * Create local DID
+     * @return {@link WalletDidResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<WalletDidResponse> walletDidCreate() throws IOException {
+        Request req = buildPost(url + "/wallet/did/create", EMPTY_JSON);
+        return getWrapped(raw(req), "result", WalletDidResponse.class);
+    }
+
+    /**
+     * Fetch the current public DID
+     * @return {@link WalletDidResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<WalletDidResponse> walletDidPublic() throws IOException {
+        Request req = buildGet(url + "/wallet/did/public");
+        return getWrapped(raw(req), "result", WalletDidResponse.class);
+    }
+
+    /**
+     * Query DID end point in wallet
+     * @param did the did
+     * @return {@link GetDidEndpointResponse}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public Optional<GetDidEndpointResponse> walletGetDidEndpoint(@NonNull String did) throws IOException {
+        Request req = buildGet(url + "/wallet/get-did-endpoint" + "?did=" + did);
+        return call(req, GetDidEndpointResponse.class);
+    }
+
+    /**
+     * Update end point in wallet and, if public, on ledger
+     * @param endpointRequest {@link SetDidEndpointRequest}
+     * @throws IOException if the request could not be executed due to cancellation, a connectivity problem or timeout.
+     */
+    public void walletSetDidEndpoint(@NonNull SetDidEndpointRequest endpointRequest) throws IOException {
+        Request req = buildPost(url + "/wallet/set-did-endpoint", endpointRequest);
+        call(req);
     }
 
     // ----------------------------------------------------
@@ -852,34 +1419,42 @@ public class AriesClient extends BaseClient {
     // ----------------------------------------------------
 
     private Request buildPost(String u, Object body) {
-        return new Request.Builder()
-                .url(u)
+        return request(u)
                 .post(jsonBody(gson.toJson(body)))
-                .header(X_API_KEY, apiKey)
+                .build();
+    }
+
+    private Request buildPut(String u, Object body) {
+        return request(u)
+                .put(jsonBody(gson.toJson(body)))
                 .build();
     }
 
     private Request buildPatch(String u, Object body) {
-        return new Request.Builder()
-                .url(u)
+        return request(u)
                 .patch(jsonBody(gson.toJson(body)))
-                .header(X_API_KEY, apiKey)
                 .build();
     }
 
     private Request buildGet(String u) {
-        return new Request.Builder()
-                .url(u)
+        return request(u)
                 .get()
-                .header(X_API_KEY, apiKey)
                 .build();
     }
 
     private Request buildDelete(String u) {
-        return new Request.Builder()
-                .url(u)
+        return request(u)
                 .delete()
-                .header(X_API_KEY, apiKey)
                 .build();
+    }
+
+    private Request.Builder request(String u) {
+        Request.Builder b = new Request.Builder()
+                .url(u)
+                .header(X_API_KEY, apiKey);
+        if (StringUtils.isNotEmpty(bearerToken)) {
+            b.header(AUTHORIZATION, BEARER + bearerToken);
+        }
+        return b;
     }
 }

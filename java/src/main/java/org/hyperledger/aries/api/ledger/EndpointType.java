@@ -5,6 +5,7 @@
  */
 package org.hyperledger.aries.api.ledger;
 
+import com.google.gson.annotations.SerializedName;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -17,13 +18,23 @@ import lombok.Getter;
 @Getter
 @AllArgsConstructor
 public enum EndpointType {
-    Endpoint("endpoint"),
-    Profile("profile"),
-    LinkedDomains("linked_domains")
+    @SerializedName("Endpoint")
+    ENDPOINT("endpoint", "Endpoint"),
+
+    @SerializedName("Profile")
+    PROFILE("profile", "Profile"),
+
+    @SerializedName("LinkedDomains")
+    LINKED_DOMAINS("linked_domains", "LinkedDomains")
     ;
 
     /**
      * The name of the endpoint how its written to the ledger
      */
     private final String ledgerName;
+
+    /**
+     * The name of the endpoint as it is used in aca-py, same as @SerializedName
+     */
+    private final String acaPyName;
 }
